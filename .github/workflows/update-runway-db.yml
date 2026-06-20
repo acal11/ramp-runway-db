@@ -1,0 +1,67 @@
+name: Update Runway Database
+
+on:
+  schedule:
+    - cron: '0 4 * * 1'   # Monday 04:00 UTC weekly
+  workflow_dispatch:        # manual trigger
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Generate airports.json and runways.json
+        run: python3 generate_runway_db.py --output-dir /tmp/runway-build
+
+      - name: Compute version tag
+        id: meta
+        run: |
+          TAG="runway-db-$(date -u +%Y%m%d)"
+          DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          echo "tag=$TAG"   >> "$GITHUB_OUTPUT"
+          echo "date=$DATE" >> "$GITHUB_OUTPUT"
+
+      - name: Write manifest.json with real release URLs
+        run: |
+          AIRPORTS_SHA=$(shasum -a 256 /tmp/runway-build/airports.json | awk '{print $1}')
+          RUNWAYS_SHA=$(shasum -a 256 /tmp/runway-build/runways.json | awk '{print $1}')
+          TAG="${{ steps.meta.outputs.tag }}"
+          REPO="${{ github.repository }}"
+          cat > /tmp/runway-build/manifest.json << EOF
+          {
+            "version": "$TAG",
+            "date": "${{ steps.meta.outputs.date }}",
+            "minAppVersion": "1.0",
+            "airports": {
+              "sha256": "$AIRPORTS_SHA",
+              "url": "https://github.com/$REPO/releases/download/$TAG/airports.json"
+            },
+            "runways": {
+              "sha256": "$RUNWAYS_SHA",
+              "url": "https://github.com/$REPO/releases/download/$TAG/runways.json"
+            }
+          }
+          EOF
+
+      - name: Create GitHub Release and upload assets
+        run: |
+          gh release create "${{ steps.meta.outputs.tag }}" \
+            --title "Runway DB ${{ steps.meta.outputs.tag }}" \
+            --notes "Weekly OurAirports data update (airports.json + runways.json)." \
+            /tmp/runway-build/airports.json \
+            /tmp/runway-build/runways.json \
+            /tmp/runway-build/manifest.json \
+            --repo "$GITHUB_REPOSITORY"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
