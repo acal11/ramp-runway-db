@@ -32,26 +32,44 @@ jobs:
           echo "tag=$TAG"   >> "$GITHUB_OUTPUT"
           echo "date=$DATE" >> "$GITHUB_OUTPUT"
 
-      - name: Write manifest.json with real release URLs
+      - name: Sign and write manifest.json
+        env:
+          SIGNING_PRIVATE_KEY: ${{ secrets.SIGNING_PRIVATE_KEY }}
+          TAG: ${{ steps.meta.outputs.tag }}
+          DATE: ${{ steps.meta.outputs.date }}
+          REPO: ${{ github.repository }}
         run: |
-          AIRPORTS_SHA=$(shasum -a 256 /tmp/runway-build/airports.json | awk '{print $1}')
-          RUNWAYS_SHA=$(shasum -a 256 /tmp/runway-build/runways.json | awk '{print $1}')
-          TAG="${{ steps.meta.outputs.tag }}"
-          REPO="${{ github.repository }}"
-          cat > /tmp/runway-build/manifest.json << EOF
-          {
-            "version": "$TAG",
-            "date": "${{ steps.meta.outputs.date }}",
-            "minAppVersion": "1.0",
-            "airports": {
-              "sha256": "$AIRPORTS_SHA",
-              "url": "https://github.com/$REPO/releases/download/$TAG/airports.json"
-            },
-            "runways": {
-              "sha256": "$RUNWAYS_SHA",
-              "url": "https://github.com/$REPO/releases/download/$TAG/runways.json"
-            }
+          pip install cryptography --quiet
+          python3 - <<'EOF'
+          import os, base64, hashlib, json
+          from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+          priv = Ed25519PrivateKey.from_private_bytes(
+              base64.b64decode(os.environ["SIGNING_PRIVATE_KEY"]))
+
+          def sign_file(path):
+              with open(path, "rb") as f:
+                  sha256_hex = hashlib.sha256(f.read()).hexdigest()
+              signature = base64.b64encode(priv.sign(sha256_hex.encode())).decode()
+              print(f"{os.path.basename(path)}: sha256={sha256_hex[:16]}… sig={signature[:16]}…")
+              return sha256_hex, signature
+
+          tag, repo = os.environ["TAG"], os.environ["REPO"]
+          base_url = f"https://github.com/{repo}/releases/download/{tag}"
+
+          airports_sha, airports_sig = sign_file("/tmp/runway-build/airports.json")
+          runways_sha,  runways_sig  = sign_file("/tmp/runway-build/runways.json")
+
+          manifest = {
+              "version": tag,
+              "date": os.environ["DATE"],
+              "minAppVersion": "1.0",
+              "airports": {"sha256": airports_sha, "signature": airports_sig, "url": f"{base_url}/airports.json"},
+              "runways":  {"sha256": runways_sha,  "signature": runways_sig,  "url": f"{base_url}/runways.json"},
           }
+          with open("/tmp/runway-build/manifest.json", "w") as f:
+              json.dump(manifest, f, indent=2)
+          print("Signed manifest written.")
           EOF
 
       - name: Create GitHub Release and upload assets
