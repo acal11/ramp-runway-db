@@ -60,6 +60,32 @@ def parse_int(value: str) -> int | None:
         return None
 
 
+def parse_runway_length_ft(value: str) -> int | None:
+    """Runway length in feet, rounded to the nearest 10.
+
+    OurAirports' `length_ft` is mixed-precision: for runways originally surveyed in
+    metres somebody converted and truncated rather than rounded, so Sydney's 3,962 m
+    arrives as 12,999 ft instead of 13,000 and 2,438 m as 7,999 instead of 8,000.
+    Rendered verbatim in the app those read as a rounding bug to the user.
+
+    Rounding to the nearest 10 ft fixes the truncated values and costs nothing real:
+    no runway length is meaningful to the foot, and the source data is not that precise.
+    """
+    feet = parse_int(value)
+    if feet is None:
+        return None
+    return int(round(feet / 10.0) * 10)
+
+
+def is_flagged_duplicate(name: str) -> bool:
+    """OurAirports flags known-bad rows in the name field rather than removing them.
+
+    Shipping these as real airports gives the app duplicate and misplaced entries.
+    """
+    lowered = name.lower()
+    return lowered.startswith("[duplicate]") or "misplaced duplicate" in lowered
+
+
 def sha256_file(path: str) -> str:
     h = hashlib.sha256()
     with open(path, "rb") as f:
@@ -87,7 +113,7 @@ def build_runway_map_for_app(runway_rows: list[dict]) -> dict[str, list[dict]]:
             "ident":       le_ident,
             "recipIdent":  he_ident or None,
             "headingTrue": parse_float(row.get("le_heading_degT", "")),
-            "lengthFt":    parse_int(row.get("length_ft", "")),
+            "lengthFt":    parse_runway_length_ft(row.get("length_ft", "")),
             "surface":     row.get("surface", "").strip() or None,
         })
     return runway_map
@@ -103,6 +129,8 @@ def generate_airports_json(airport_rows: list[dict], runway_rows: list[dict]) ->
         lat  = parse_float(row.get("latitude_deg", ""))
         lon  = parse_float(row.get("longitude_deg", ""))
         if not icao or lat is None or lon is None:
+            continue
+        if is_flagged_duplicate(row.get("name", "")):
             continue
         airports.append({
             "icao":        icao,
